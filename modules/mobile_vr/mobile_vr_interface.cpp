@@ -32,6 +32,7 @@
 
 #include "core/input/input.h"
 #include "core/os/os.h"
+#include "core/string/print_string.h"
 #include "servers/display_server.h"
 #include "servers/rendering/rendering_server_globals.h"
 
@@ -116,7 +117,7 @@ Basis MobileVRInterface::combine_acc_mag(const Vector3 &p_grav, const Vector3 &p
 	acc_mag_m3.rows[1] = up;
 	acc_mag_m3.rows[2] = magneto;
 
-	return acc_mag_m3;
+	return acc_mag_m3 * -1.0f;
 };
 
 void MobileVRInterface::set_position_from_sensors() {
@@ -137,12 +138,24 @@ void MobileVRInterface::set_position_from_sensors() {
 	Vector3 down(0.0, -1.0, 0.0); // Down is Y negative
 	Vector3 north(0.0, 0.0, 1.0); // North is Z positive
 
+
 	// make copies of our inputs
 	bool has_grav = false;
 	Vector3 acc = input->get_accelerometer();
+	acc *= -1.0f;
 	Vector3 gyro = input->get_gyroscope();
+	gyro *= -1.0f;
 	Vector3 grav = input->get_gravity();
+	grav *= -1.0f;
 	Vector3 magneto = scale_magneto(input->get_magnetometer()); // this may be overkill on iOS because we're already getting a calibrated magnetometer reading
+	// magneto *= -1.0f;
+
+	// Print statements for debugging
+	print_line("Accelerometer: (" + String::num_real(acc.x) + ", " + String::num_real(acc.y) + ", " + String::num_real(acc.z) + ")");
+	print_line("Gyroscope: (" + String::num_real(gyro.x) + ", " + String::num_real(gyro.y) + ", " + String::num_real(gyro.z) + ")");
+	print_line("Gravity: (" + String::num_real(grav.x) + ", " + String::num_real(grav.y) + ", " + String::num_real(grav.z) + ")");
+	print_line("Mageneto: (" + String::num_real(magneto.x) + ", " + String::num_real(magneto.y) + ", " + String::num_real(magneto.z) + ")");
+
 
 	if (sensor_first) {
 		sensor_first = false;
@@ -169,15 +182,17 @@ void MobileVRInterface::set_position_from_sensors() {
 	bool has_magneto = magneto.length() > 0.1;
 	if (gyro.length() > 0.1) {
 		/* this can return to 0.0 if the user doesn't move the phone, so once on, it's on */
-		has_gyro = true;
+		// has_gyro = true;
 	};
 
 	if (has_gyro) {
+		print_line("has_gyro");
 		// start with applying our gyro (do NOT smooth our gyro!)
+		float factor = 1.0f;
 		Basis rotate;
-		rotate.rotate(orientation.get_column(0), gyro.x * delta_time);
-		rotate.rotate(orientation.get_column(1), gyro.y * delta_time);
-		rotate.rotate(orientation.get_column(2), gyro.z * delta_time);
+		rotate.rotate(orientation.get_column(0), gyro.x * delta_time * factor);
+		rotate.rotate(orientation.get_column(1), gyro.y * delta_time * factor);
+		rotate.rotate(orientation.get_column(2), gyro.z * delta_time * factor);
 		orientation = rotate * orientation;
 
 		tracking_state = XRInterface::XR_NORMAL_TRACKING;
@@ -187,15 +202,17 @@ void MobileVRInterface::set_position_from_sensors() {
 	///@TODO improve this, the magnetometer is very fidgety sometimes flipping the axis for no apparent reason (probably a bug on my part)
 	// if you have a gyro + accelerometer that combo tends to be better than combining all three but without a gyro you need the magnetometer..
 	if (has_magneto && has_grav && !has_gyro) {
+		print_line("has_magneto && has_grav && !has_gyro");
 		// convert to quaternions, easier to smooth those out
 		Quaternion transform_quat(orientation);
 		Quaternion acc_mag_quat(combine_acc_mag(grav, magneto));
 		transform_quat = transform_quat.slerp(acc_mag_quat, 0.1);
-		orientation = Basis(transform_quat);
+		orientation = Basis(acc_mag_quat);
 
 		tracking_state = XRInterface::XR_NORMAL_TRACKING;
 		tracking_confidence = XRPose::XR_TRACKING_CONFIDENCE_HIGH;
 	} else if (has_grav) {
+		print_line("has_grav");
 		// use gravity vector to make sure down is down...
 		// transform gravity into our world space
 		grav.normalize();

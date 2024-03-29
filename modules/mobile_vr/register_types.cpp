@@ -43,6 +43,7 @@ void initialize_mobile_vr_module(ModuleInitializationLevel p_level) {
 
 	if (XRServer::get_singleton()) {
 		mobile_vr.instantiate();
+		mobile_vr->initialize();
 		XRServer::get_singleton()->add_interface(mobile_vr);
 	}
 }
