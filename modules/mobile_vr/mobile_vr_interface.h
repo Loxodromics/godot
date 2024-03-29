@@ -33,6 +33,7 @@
 
 #include "servers/xr/xr_interface.h"
 #include "servers/xr/xr_positional_tracker.h"
+#include "Fusion.h"
 
 /**
 	The mobile interface is a native VR interface that can be used on Android and iOS phones.
@@ -69,6 +70,9 @@ private:
 	// at a minimum we need a tracker for our head
 	Ref<XRPositionalTracker> head;
 	Transform3D head_transform;
+
+	FusionAhrs ahrs;
+	Basis orientation;
 
 	/*
 		logic for processing our sensor data, this was originally in our positional tracker logic but I think

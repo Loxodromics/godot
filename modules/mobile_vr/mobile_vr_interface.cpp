@@ -31,7 +31,11 @@
 #include "mobile_vr_interface.h"
 
 #include "core/input/input.h"
+#include "core/math/vector3.h"
 #include "core/os/os.h"
+#include "core/string/print_string.h"
+#include "modules/mobile_vr/FusionAhrs.h"
+#include "modules/mobile_vr/FusionMath.h"
 #include "servers/display_server.h"
 #include "servers/rendering/rendering_server_globals.h"
 
@@ -116,7 +120,7 @@ Basis MobileVRInterface::combine_acc_mag(const Vector3 &p_grav, const Vector3 &p
 	acc_mag_m3.rows[1] = up;
 	acc_mag_m3.rows[2] = magneto;
 
-	return acc_mag_m3;
+	return acc_mag_m3 * -1.0f;
 };
 
 void MobileVRInterface::set_position_from_sensors() {
@@ -125,8 +129,6 @@ void MobileVRInterface::set_position_from_sensors() {
 	// this is a helper function that attempts to adjust our transform using our 9dof sensors
 	// 9dof is a misleading marketing term coming from 3 accelerometer axis + 3 gyro axis + 3 magnetometer axis = 9 axis
 	// but in reality this only offers 3 dof (yaw, pitch, roll) orientation
-
-	Basis orientation;
 
 	uint64_t ticks = OS::get_singleton()->get_ticks_usec();
 	uint64_t ticks_elapsed = ticks - last_ticks;
@@ -137,82 +139,94 @@ void MobileVRInterface::set_position_from_sensors() {
 	Vector3 down(0.0, -1.0, 0.0); // Down is Y negative
 	Vector3 north(0.0, 0.0, 1.0); // North is Z positive
 
+
 	// make copies of our inputs
-	bool has_grav = false;
 	Vector3 acc = input->get_accelerometer();
+	acc *= -1.0f;
 	Vector3 gyro = input->get_gyroscope();
 	Vector3 grav = input->get_gravity();
 	Vector3 magneto = scale_magneto(input->get_magnetometer()); // this may be overkill on iOS because we're already getting a calibrated magnetometer reading
 
-	if (sensor_first) {
-		sensor_first = false;
-	} else {
-		acc = scrub(acc, last_accerometer_data, 2, 0.2);
-		magneto = scrub(magneto, last_magnetometer_data, 3, 0.3);
-	};
 
-	last_accerometer_data = acc;
-	last_magnetometer_data = magneto;
+	// Print statements for debugging
+	print_line("Accelerometer: (" + String::num_real(acc.x) + ", " + String::num_real(acc.y) + ", " + String::num_real(acc.z) + ")");
+	print_line("Gyroscope: (" + String::num_real(gyro.x) + ", " + String::num_real(gyro.y) + ", " + String::num_real(gyro.z) + ")");
+	print_line("Gravity: (" + String::num_real(grav.x) + ", " + String::num_real(grav.y) + ", " + String::num_real(grav.z) + ")");
+	print_line("Mageneto: (" + String::num_real(magneto.x) + ", " + String::num_real(magneto.y) + ", " + String::num_real(magneto.z) + ")");
 
-	if (grav.length() < 0.1) {
-		// not ideal but use our accelerometer, this will contain shaky user behavior
-		// maybe look into some math but I'm guessing that if this isn't available, it's because we lack the gyro sensor to actually work out
-		// what a stable gravity vector is
-		grav = acc;
-		if (grav.length() > 0.1) {
-			has_grav = true;
-		};
-	} else {
-		has_grav = true;
-	};
+	static const float PI = 3.141592653589793238f;
+	// FusionVector gyroscope = {0.0f, 0.0f, 0.0f};
+	FusionVector gyroscope = {gyro.x * PI / 180.0f, gyro.y * PI / 180.0f, gyro.z * PI / 180.0f}; // replace this with actual gyroscope data in degrees/s
+	// FusionVector gyroscope = {gyro.x, gyro.z, gyro.y}; // replace this with actual gyroscope data in degrees/s
+	FusionVector accelerometer = {acc.x, acc.z, acc.y}; // replace this with actual accelerometer data in g
+	FusionVector magnetometer = {magneto.x, magneto.y, magneto.z};
+	// Update Madgwick filter
+	// FusionAhrsUpdate(&ahrs, gyroscope, accelerometer, magnetometer, delta_time);
 
-	bool has_magneto = magneto.length() > 0.1;
-	if (gyro.length() > 0.1) {
-		/* this can return to 0.0 if the user doesn't move the phone, so once on, it's on */
-		has_gyro = true;
-	};
 
-	if (has_gyro) {
-		// start with applying our gyro (do NOT smooth our gyro!)
-		Basis rotate;
-		rotate.rotate(orientation.get_column(0), gyro.x * delta_time);
-		rotate.rotate(orientation.get_column(1), gyro.y * delta_time);
-		rotate.rotate(orientation.get_column(2), gyro.z * delta_time);
-		orientation = rotate * orientation;
+	// // Apply calibration
+	// gyroscope = FusionCalibrationInertial(gyroscope, gyroscopeMisalignment, gyroscopeSensitivity, gyroscopeOffset);
+	// accelerometer = FusionCalibrationInertial(accelerometer, accelerometerMisalignment, accelerometerSensitivity, accelerometerOffset);
+	// magnetometer = FusionCalibrationMagnetic(magnetometer, softIronMatrix, hardIronOffset);
 
-		tracking_state = XRInterface::XR_NORMAL_TRACKING;
-		tracking_confidence = XRPose::XR_TRACKING_CONFIDENCE_HIGH;
-	};
+	// // Update gyroscope offset correction algorithm
+	// gyroscope = FusionOffsetUpdate(&offset, gyroscope);
 
-	///@TODO improve this, the magnetometer is very fidgety sometimes flipping the axis for no apparent reason (probably a bug on my part)
-	// if you have a gyro + accelerometer that combo tends to be better than combining all three but without a gyro you need the magnetometer..
-	if (has_magneto && has_grav && !has_gyro) {
-		// convert to quaternions, easier to smooth those out
-		Quaternion transform_quat(orientation);
-		Quaternion acc_mag_quat(combine_acc_mag(grav, magneto));
-		transform_quat = transform_quat.slerp(acc_mag_quat, 0.1);
-		orientation = Basis(transform_quat);
 
-		tracking_state = XRInterface::XR_NORMAL_TRACKING;
-		tracking_confidence = XRPose::XR_TRACKING_CONFIDENCE_HIGH;
-	} else if (has_grav) {
-		// use gravity vector to make sure down is down...
-		// transform gravity into our world space
-		grav.normalize();
-		Vector3 grav_adj = orientation.xform(grav);
-		float dot = grav_adj.dot(down);
-		if ((dot > -1.0) && (dot < 1.0)) {
-			// axis around which we have this rotation
-			Vector3 axis = grav_adj.cross(down);
-			axis.normalize();
+	FusionAhrsUpdateNoMagnetometer(&ahrs, gyroscope, accelerometer, delta_time);
+	FusionAhrsInternalStates state = FusionAhrsGetInternalStates(&ahrs);
 
-			Basis drift_compensation(axis, acos(dot) * delta_time * 10);
-			orientation = drift_compensation * orientation;
-		};
-	};
+	print_line("accelerationError: " + String::num_real(state.accelerationError) + " accelerometerIgnored: " + String::num_real( state.accelerometerIgnored) +
+		" accelerationRecoveryTrigger: " + String::num_real(state.accelerationRecoveryTrigger) + " magneticError: " + String::num_real(state.magneticError) +
+		" magnetometerIgnored: " + String::num_real(state.magnetometerIgnored) + " magneticRecoveryTrigger: " + String::num_real(state.magneticRecoveryTrigger));
+
+	FusionQuaternion quad = FusionAhrsGetQuaternion(&ahrs);
+	Quaternion q {quad.element.x, quad.element.y, quad.element.z, quad.element.w};
+
+	// Convert the filter's quaternion output to a Basis
+	// Quaternion q = madgwickFilter.get_orientation();
+	// Quaternion rotationQuaternion = Quaternion(acc.normalized(), -gyro.y);
+	// orientation = orientation.lerp(Basis(q), 0.5f);
+	orientation = Basis(q);
+
+	// acc = Vector3(0.0f, 1.0f, 0.0f);
+	acc = acc.normalized();
+	// acc = Vector3(acc.z, acc.y, acc.x);
+	// Choose an arbitrary forward vector, ensuring it's not parallel to the up vector
+	Vector3 forwardVector =  Vector3(0.0, 0.0, 1.0);
+	// Calculate the right vector as the cross product of upVector and forwardVector
+	Vector3 rightVector = acc.cross(forwardVector).normalized();
+
+	// Recalculate the forward vector to ensure orthogonality
+	forwardVector = rightVector.cross(acc).normalized();
+
+	// Create a new Basis from the right, up, and forward vectors
+	Basis orientationBasis(rightVector, acc, forwardVector);
+
+	// First, extract each column vector from the orientationBasis
+	Vector3 column0 = orientationBasis.get_column(0); // Right vector
+	Vector3 column1 = orientationBasis.get_column(1); // Up vector
+	Vector3 column2 = orientationBasis.get_column(2); // Forward vector
+
+	// Now, print each column vector
+	print_line("acc");
+	print_line("Right vector: " + column0);
+	print_line("Up vector: " + column1);
+	print_line("Forward vector: " + column2);
+
+	column0 = orientation.get_column(0); // Right vector
+	column1 = orientation.get_column(1); // Up vector
+	column2 = orientation.get_column(2); // Forward vector
+
+	// Now, print each column vector
+	print_line("Fusion");
+	print_line("Right vector: " + column0);
+	print_line("Up vector: " + column1);
+	print_line("Forward vector: " + column2);
 
 	// and copy to our head transform
 	head_transform.basis = orientation.orthonormalized();
+	// head_transform.basis = orientationBasis; //.orthonormalized();
 
 	last_ticks = ticks;
 };
@@ -344,6 +358,33 @@ bool MobileVRInterface::initialize() {
 		xr_server->set_primary_interface(this);
 
 		last_ticks = OS::get_singleton()->get_ticks_usec();
+
+		// Define calibration (replace with actual calibration data if available)
+		const FusionMatrix gyroscopeMisalignment = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+		const FusionVector gyroscopeSensitivity = {1.0f, 1.0f, 1.0f};
+		const FusionVector gyroscopeOffset = {0.0f, 0.0f, 0.0f};
+		const FusionMatrix accelerometerMisalignment = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+		const FusionVector accelerometerSensitivity = {1.0f, 1.0f, 1.0f};
+		const FusionVector accelerometerOffset = {0.0f, 0.0f, 0.0f};
+		const FusionMatrix softIronMatrix = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+		const FusionVector hardIronOffset = {0.0f, 0.0f, 0.0f};
+
+		// Initialise algorithms
+		FusionOffset offset;
+
+		FusionOffsetInitialise(&offset, 30);
+
+		// Set AHRS algorithm settings
+		const FusionAhrsSettings settings = {
+				.convention = FusionConventionNwu,
+				.gain = 0.5f,
+				.gyroscopeRange = 2000.0f, /* replace this with actual gyroscope range in degrees/s */
+				.accelerationRejection = 0.0f,
+				.magneticRejection = 0.0f,
+				.recoveryTriggerPeriod = 1 * 30, /* 5 seconds */
+		};
+		FusionAhrsSetSettings(&ahrs, &settings);
+		// FusionAhrsInitialise(&ahrs);
 
 		initialized = true;
 	};
